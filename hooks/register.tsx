@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { HookOf, Register, RenderInput } from 'claude-code'
 
 import type { Option, Pick } from '../types'
 
@@ -23,6 +23,9 @@ const JPG_STEPS = [
 // A Bash call that opens this many images at once is a pick, not a look.
 const VIEWER = /(^|[;&|]\s*)(open(\s+-a\s+"?Preview"?)?|xdg-open|imv|feh|eog|qlmanage\s+-p)\s/
 const IMAGE_ARG = /\.(png|jpe?g|webp|gif)\b/gi
+
+// What a ui.render hook holds as `$`.
+type Api = Parameters<HookOf<'ui.render'>>[0]
 
 type Run = (argv: readonly string[]) => Promise<boolean>
 
@@ -163,95 +166,122 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // A pick_image call with its own row draws the picker as its result.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (e.props.tool !== TOOL) return next(e)
     const pick = (await read($, picks))[e.requestId]
     if (!pick) return next(e)
 
-    const choose = async (n: number) => {
-      if (pick.picked !== undefined) return
-      await update($, picks, all => ({ ...all, [pick.id]: { ...(all[pick.id] ?? pick), picked: n } }))
-      const option = pick.options[n - 1]
-      await $.prompt.submit({
-        text: option ? `Picked option ${n}: ${option.path}` : 'None of these. Regenerate.',
-        asUser: true,
-      })
-    }
+    return picker($, e, pick)
+  })
 
-    const table = $.ui.resolve(e)
-    const { Box, Text, Button } = table
-    const perRow = pick.options.length <= 4 ? 2 : 3
-    const columns = e.viewport?.columns ?? 100
-    const cellColumns = Math.max(16, Math.min(60, Math.floor((columns - 4) / perRow) - 2))
+  // The desktop app folds consecutive tool calls into one collapsed group row,
+  // and no ToolResult is drawn inside it. Draw each pick above the group's own line.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const ids = e.props.calls.filter(c => c.tool === TOOL).map(c => c.tool_use_id)
+    if (ids.length === 0) return next(e)
+    const all = await read($, picks)
+    const found = ids.flatMap(id => (id && all[id] ? [all[id]] : []))
+    if (found.length === 0) return next(e)
 
-    // Rows stored by an older version may hold thumbnails past the tree's budget.
-    let spent = 0
-    const picture = async (option: Option, n: number) => {
-      const alt = `${n}. ${basename(option.path)}`
-      const aspect = option.height / option.width
-
-      if (e.surface === 'terminal' && 'Image' in table && option.png) {
-        const { base64 } = await $.fs.read(option.png, { as: 'bytes' })
-        spent += base64.length
-        if (spent > TREE_LIMIT) return <Text dimColor>{alt}</Text>
-        // A terminal cell is about twice as tall as it is wide.
-        const rows = Math.max(4, Math.min(30, Math.round((cellColumns * aspect) / 2.1)))
-        return <table.Image source={{ png: base64 }} columns={cellColumns} rows={rows} alt={alt} />
-      }
-      if ('Svg' in table && option.jpg) {
-        const { base64 } = await $.fs.read(option.jpg, { as: 'bytes' })
-        const width = 280
-        const height = Math.round(width * aspect)
-        const source =
-          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
-          `width="${width}" height="${height}"><image href="data:image/jpeg;base64,${base64}" ` +
-          `width="${width}" height="${height}"/></svg>`
-        return <table.Svg source={source} alt={alt} width={width} height={height} />
-      }
-
-      return <Text dimColor>{alt}</Text>
-    }
-
-    const cells = await Promise.all(
-      pick.options.map(async (option, i) => {
-        const n = i + 1
-        const isPicked = pick.picked === n
-        return (
-          <Box flexDirection="column" marginRight={2} marginBottom={1}>
-            {await picture(option, n)}
-            {pick.picked === undefined ? (
-              <Button key={`pick-${n}`} hotkey={String(n)} onPress={() => void choose(n)}>
-                {`Pick ${n}`}
-              </Button>
-            ) : (
-              <Text bold={isPicked} dimColor={!isPicked}>
-                {isPicked ? `✓ ${n} picked` : `${n}`}
-              </Text>
-            )}
-          </Box>
-        )
-      }),
-    )
-    const rows = []
-    for (let i = 0; i < cells.length; i += perRow) {
-      rows.push(<Box flexDirection="row">{cells.slice(i, i + perRow)}</Box>)
-    }
+    const { Box } = $.ui.resolve(e)
+    const drawn = await Promise.all(found.map(pick => picker($, e, pick)))
+    const group = await next(e)
 
     return (
       <Box flexDirection="column">
-        <Text bold>{pick.prompt}</Text>
-        {rows}
-        {pick.picked === undefined ? (
-          <Box flexDirection="row">
-            <Button key="pick-none" hotkey="0" dimColor onPress={() => void choose(0)}>
-              None of these
-            </Button>
-            <Text dimColor>  or type the number in the prompt</Text>
-          </Box>
-        ) : (
-          pick.picked === 0 && <Text dimColor>None picked</Text>
-        )}
+        {drawn}
+        {group}
       </Box>
     )
   })
+}
+
+// The grid of options with Pick buttons, drawn wherever the call shows up.
+async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup'>, pick: Pick) {
+  const choose = async (n: number) => {
+    if (pick.picked !== undefined) return
+    await update($, picks, all => ({ ...all, [pick.id]: { ...(all[pick.id] ?? pick), picked: n } }))
+    const option = pick.options[n - 1]
+    await $.prompt.submit({
+      text: option ? `Picked option ${n}: ${option.path}` : 'None of these. Regenerate.',
+      asUser: true,
+    })
+  }
+
+  const table = $.ui.resolve(e)
+  const { Box, Text, Button } = table
+  const perRow = pick.options.length <= 4 ? 2 : 3
+  const columns = e.viewport?.columns ?? 100
+  const cellColumns = Math.max(16, Math.min(60, Math.floor((columns - 4) / perRow) - 2))
+
+  // Rows stored by an older version may hold thumbnails past the tree's budget.
+  let spent = 0
+  const picture = async (option: Option, n: number) => {
+    const alt = `${n}. ${basename(option.path)}`
+    const aspect = option.height / option.width
+
+    if (e.surface === 'terminal' && 'Image' in table && option.png) {
+      const { base64 } = await $.fs.read(option.png, { as: 'bytes' })
+      spent += base64.length
+      if (spent > TREE_LIMIT) return <Text dimColor>{alt}</Text>
+      // A terminal cell is about twice as tall as it is wide.
+      const rows = Math.max(4, Math.min(30, Math.round((cellColumns * aspect) / 2.1)))
+      return <table.Image source={{ png: base64 }} columns={cellColumns} rows={rows} alt={alt} />
+    }
+    if ('Svg' in table && option.jpg) {
+      const { base64 } = await $.fs.read(option.jpg, { as: 'bytes' })
+      const width = 280
+      const height = Math.round(width * aspect)
+      const source =
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
+        `width="${width}" height="${height}"><image href="data:image/jpeg;base64,${base64}" ` +
+        `width="${width}" height="${height}"/></svg>`
+      return <table.Svg source={source} alt={alt} width={width} height={height} />
+    }
+
+    return <Text dimColor>{alt}</Text>
+  }
+
+  const cells = await Promise.all(
+    pick.options.map(async (option, i) => {
+      const n = i + 1
+      const isPicked = pick.picked === n
+      return (
+        <Box flexDirection="column" marginRight={2} marginBottom={1}>
+          {await picture(option, n)}
+          {pick.picked === undefined ? (
+            <Button key={`${pick.id}-pick-${n}`} hotkey={String(n)} onPress={() => void choose(n)}>
+              {`Pick ${n}`}
+            </Button>
+          ) : (
+            <Text bold={isPicked} dimColor={!isPicked}>
+              {isPicked ? `✓ ${n} picked` : `${n}`}
+            </Text>
+          )}
+        </Box>
+      )
+    }),
+  )
+  const rows = []
+  for (let i = 0; i < cells.length; i += perRow) {
+    rows.push(<Box flexDirection="row">{cells.slice(i, i + perRow)}</Box>)
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>{pick.prompt}</Text>
+      {rows}
+      {pick.picked === undefined ? (
+        <Box flexDirection="row">
+          <Button key={`${pick.id}-pick-none`} hotkey="0" dimColor onPress={() => void choose(0)}>
+            None of these
+          </Button>
+          <Text dimColor>  or type the number in the prompt</Text>
+        </Box>
+      ) : (
+        pick.picked === 0 && <Text dimColor>None picked</Text>
+      )}
+    </Box>
+  )
 }
