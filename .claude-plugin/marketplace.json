@@ -1,0 +1,5 @@
+{
+  "name": "mod-image-picker",
+  "owner": { "name": "kamicrafted" },
+  "plugins": [{ "name": "image-picker", "source": "./" }]
+}

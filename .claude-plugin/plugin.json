@@ -1,0 +1,8 @@
+{
+  "name": "image-picker",
+  "version": "0.1.0",
+  "description": "Show generated image options inline (terminal or Claude Desktop) and pick one with a click or a number",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "repository": "https://github.com/kamicrafted/mod-image-picker"
+}
