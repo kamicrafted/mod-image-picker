@@ -15,6 +15,19 @@ const TREE_LIMIT = 2_000_000
 const PNG_STEPS = [768, 640, 512, 420, 340, 280, 220]
 // Desktop thumbnails ride inside an Svg, whose source is capped at 131072 chars.
 const SVG_LIMIT = 131072 - 1024
+// Desktop silently drops a grid of images past a size it doesn't log. Measured
+// 2026-11-09 on Desktop: six thumbnails at ~42k chars in all drew; six at ~63k
+// drew nothing (one 58k image alone does draw, so the cutoff isn't one number).
+// All grid images in one desktop tree share this budget.
+const DESKTOP_TREE_BUDGET = 40_000
+const THUMB_STEPS = [
+  { px: 300, quality: 70 },
+  { px: 240, quality: 60 },
+  { px: 180, quality: 55 },
+  { px: 120, quality: 50 },
+]
+// Desktop thumbnail width in CSS pixels; Enlarge shows the full 480px JPEG.
+const DESKTOP_THUMB = 150
 const JPG_STEPS = [
   { px: 480, quality: 78 },
   { px: 360, quality: 65 },
@@ -134,6 +147,17 @@ export const register: Register = on => {
           break
         }
       }
+
+      const thumbBudget = DESKTOP_TREE_BUDGET / paths.length - 512
+      for (const step of THUMB_STEPS) {
+        const thumb = `${dir}/${i + 1}-thumb-${step.px}.jpg`
+        if (!(await resize(run, path, thumb, step.px, step.quality))) break
+        const { base64 } = await $.fs.read(thumb, { as: 'bytes' })
+        if (base64.length < thumbBudget) {
+          option.thumb = thumb
+          break
+        }
+      }
       options.push(option)
     }
 
@@ -168,11 +192,31 @@ export const register: Register = on => {
 
   // A pick_image call with its own row draws the picker as its result.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.tool !== TOOL) return next(e)
+    // The desktop app hides a standalone row's result until the row is expanded,
+    // so there the picker is drawn on the row itself (ToolUse, below).
+    if (e.props.tool !== TOOL || e.surface !== 'terminal') return next(e)
     const pick = (await read($, picks))[e.requestId]
     if (!pick) return next(e)
 
     return picker($, e, pick)
+  })
+
+  // A standalone pick_image row on the desktop: the picker under the row's own line.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool !== TOOL || e.surface === 'terminal') return next(e)
+    const pick = (await read($, picks))[e.props.tool_use_id]
+    if (!pick) return next(e)
+
+    const { Box } = $.ui.resolve(e)
+    const drawn = await picker($, e, pick)
+    const row = await next(e)
+
+    return (
+      <Box flexDirection="column">
+        {row}
+        {drawn}
+      </Box>
+    )
   })
 
   // The desktop app folds consecutive tool calls into one collapsed group row,
@@ -198,7 +242,7 @@ export const register: Register = on => {
 }
 
 // The grid of options with Pick buttons, drawn wherever the call shows up.
-async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup'>, pick: Pick) {
+async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup' | 'ToolUse'>, pick: Pick) {
   const choose = async (n: number) => {
     if (pick.picked !== undefined) return
     await update($, picks, all => ({ ...all, [pick.id]: { ...(all[pick.id] ?? pick), picked: n } }))
@@ -209,38 +253,91 @@ async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup'>, pick: 
     })
   }
 
+  const zoom = async (n: number) => {
+    await update($, picks, all => ({ ...all, [pick.id]: { ...(all[pick.id] ?? pick), zoom: n } }))
+  }
+
   const table = $.ui.resolve(e)
   const { Box, Text, Button } = table
+  const isOpen = pick.picked === undefined
+  const isTerminal = e.surface === 'terminal'
   const perRow = pick.options.length <= 4 ? 2 : 3
   const columns = e.viewport?.columns ?? 100
   const cellColumns = Math.max(16, Math.min(60, Math.floor((columns - 4) / perRow) - 2))
 
   // Rows stored by an older version may hold thumbnails past the tree's budget.
   let spent = 0
-  const picture = async (option: Option, n: number) => {
+  const picture = async (option: Option, n: number, isLarge: boolean) => {
     const alt = `${n}. ${basename(option.path)}`
     const aspect = option.height / option.width
 
-    if (e.surface === 'terminal' && 'Image' in table && option.png) {
+    if (isTerminal && 'Image' in table && option.png) {
       const { base64 } = await $.fs.read(option.png, { as: 'bytes' })
       spent += base64.length
       if (spent > TREE_LIMIT) return <Text dimColor>{alt}</Text>
+      const across = isLarge ? Math.max(16, Math.min(120, columns - 4)) : cellColumns
       // A terminal cell is about twice as tall as it is wide.
-      const rows = Math.max(4, Math.min(30, Math.round((cellColumns * aspect) / 2.1)))
-      return <table.Image source={{ png: base64 }} columns={cellColumns} rows={rows} alt={alt} />
+      const rows = Math.max(4, Math.min(isLarge ? 60 : 30, Math.round((across * aspect) / 2.1)))
+      return <table.Image source={{ png: base64 }} columns={across} rows={rows} alt={alt} />
     }
-    if ('Svg' in table && option.jpg) {
-      const { base64 } = await $.fs.read(option.jpg, { as: 'bytes' })
-      const width = 280
+    const file = isLarge ? option.jpg : option.thumb
+    if ('Svg' in table && file) {
+      const { base64 } = await $.fs.read(file, { as: 'bytes' })
+      // A row stored before the budget may hold larger thumbnails: past the budget,
+      // name the option instead, so the rest of the grid still draws.
+      if (!isLarge) {
+        spent += base64.length
+        if (spent > DESKTOP_TREE_BUDGET) return <Text dimColor>{alt}</Text>
+      }
+      // The enlarged view gives no size, so the surface fits it to the frame's width.
+      const width = isLarge ? 480 : DESKTOP_THUMB
       const height = Math.round(width * aspect)
       const source =
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
         `width="${width}" height="${height}"><image href="data:image/jpeg;base64,${base64}" ` +
         `width="${width}" height="${height}"/></svg>`
-      return <table.Svg source={source} alt={alt} width={width} height={height} />
+      return isLarge
+        ? <table.Svg source={source} alt={alt} />
+        : <table.Svg source={source} alt={alt} width={width} height={height} />
     }
 
     return <Text dimColor>{alt}</Text>
+  }
+
+  const pickButton = (n: number, where: string) => (
+    <Button key={`${pick.id}-${where}-${n}`} hotkey={String(n)} onPress={() => void choose(n)}>
+      {`Pick ${n}`}
+    </Button>
+  )
+
+  // "None of these" sits on the prompt's line, so the grid's height never hides it.
+  const header = (
+    <Box flexDirection="row" alignItems="center">
+      <Text bold>{pick.prompt}</Text>
+      {isOpen && <Text>  </Text>}
+      {isOpen && (
+        <Button key={`${pick.id}-pick-none`} hotkey="0" dimColor onPress={() => void choose(0)}>
+          None of these
+        </Button>
+      )}
+    </Box>
+  )
+
+  const enlarged = isOpen && pick.zoom ? pick.options[pick.zoom - 1] : undefined
+  if (enlarged && pick.zoom) {
+    const n = pick.zoom
+    return (
+      <Box flexDirection="column">
+        {header}
+        {await picture(enlarged, n, true)}
+        <Box flexDirection="row" marginTop={1}>
+          {pickButton(n, 'zoom-pick')}
+          <Button key={`${pick.id}-zoom-back`} onPress={() => void zoom(0)}>
+            Back to all
+          </Button>
+        </Box>
+      </Box>
+    )
   }
 
   const cells = await Promise.all(
@@ -249,11 +346,14 @@ async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup'>, pick: 
       const isPicked = pick.picked === n
       return (
         <Box flexDirection="column" marginRight={2} marginBottom={1}>
-          {await picture(option, n)}
-          {pick.picked === undefined ? (
-            <Button key={`${pick.id}-pick-${n}`} hotkey={String(n)} onPress={() => void choose(n)}>
-              {`Pick ${n}`}
-            </Button>
+          {await picture(option, n, false)}
+          {isOpen ? (
+            <Box flexDirection="row">
+              {pickButton(n, 'pick')}
+              <Button key={`${pick.id}-zoom-${n}`} onPress={() => void zoom(n)}>
+                Enlarge
+              </Button>
+            </Box>
           ) : (
             <Text bold={isPicked} dimColor={!isPicked}>
               {isPicked ? `✓ ${n} picked` : `${n}`}
@@ -263,25 +363,23 @@ async function picker($: Api, e: RenderInput<'ToolResult' | 'ToolGroup'>, pick: 
       )
     }),
   )
-  const rows = []
-  for (let i = 0; i < cells.length; i += perRow) {
-    rows.push(<Box flexDirection="row">{cells.slice(i, i + perRow)}</Box>)
+
+  // Desktop lays every option in one wrapping row, as many across as the frame fits.
+  const grid = []
+  if (isTerminal) {
+    for (let i = 0; i < cells.length; i += perRow) {
+      grid.push(<Box flexDirection="row">{cells.slice(i, i + perRow)}</Box>)
+    }
+  } else {
+    grid.push(<Box flexDirection="row" flexWrap="wrap">{cells}</Box>)
   }
 
   return (
     <Box flexDirection="column">
-      <Text bold>{pick.prompt}</Text>
-      {rows}
-      {pick.picked === undefined ? (
-        <Box flexDirection="row">
-          <Button key={`${pick.id}-pick-none`} hotkey="0" dimColor onPress={() => void choose(0)}>
-            None of these
-          </Button>
-          <Text dimColor>  or type the number in the prompt</Text>
-        </Box>
-      ) : (
-        pick.picked === 0 && <Text dimColor>None picked</Text>
-      )}
+      {header}
+      {grid}
+      {isOpen && <Text dimColor>Or type the number in the prompt.</Text>}
+      {pick.picked === 0 && <Text dimColor>None picked</Text>}
     </Box>
   )
 }
