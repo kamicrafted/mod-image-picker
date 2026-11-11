@@ -1,44 +1,83 @@
 # image-picker
 
-A Claude Code mod for choosing between generated images without leaving the session. When an image tool gives you several options, Claude shows them as a grid right in the transcript. Click **Pick N** or press its number, and your choice goes back to Claude as your next message. No Preview window, no switching apps.
+When Claude makes several images for you to choose from, this mod shows them side by side right in your Claude Code session. Click **Pick 2** (or press 2), and Claude gets your choice as your next message. You don't need to open Preview or switch apps.
 
-## Install
+## Install it
 
-At the prompt of a Claude Code terminal session:
+**You install this yourself, not Claude.** If you ask Claude to install it, it will stop and ask you to do it. That's on purpose: a mod changes how Claude works in every future session, so Claude leaves that decision to you.
 
-```
-/plugin install image-picker --marketplace kamicrafted/mod-image-picker
-```
+Pick the way that matches how you use Claude.
 
-Answer `y` to add the marketplace, then press Enter to install at the user scope.
+### In the Claude Code terminal (the usual way)
 
-From a shell:
+1. Type this at the Claude Code prompt and press Enter:
+
+   ```
+   /plugin install image-picker --marketplace kamicrafted/mod-image-picker
+   ```
+
+2. When it asks whether to add the marketplace, type `y`.
+3. When it asks where to install, press Enter to keep the default.
+
+### In the Claude desktop app
+
+The `/plugin` command doesn't work in the desktop app. Use the menus instead:
+
+1. Click **+** next to the box where you type.
+2. Click **Plugins**, then **Add marketplace**, and paste `kamicrafted/mod-image-picker`.
+3. Click **Add plugin**.
+
+### From your own terminal
+
+If you'd rather run a command outside Claude, open the Terminal app and paste this:
 
 ```
 claude plugin install image-picker --marketplace kamicrafted/mod-image-picker
 ```
 
-In the Claude desktop app, where `/plugin` doesn't run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `kamicrafted/mod-image-picker`, then **Add plugin**.
+Claude can't run this line for you. If Claude offers to, type it at the Claude prompt with a `!` in front instead. The `!` runs the command as you, not as Claude:
 
-## How it works
+```
+! claude plugin install image-picker --marketplace kamicrafted/mod-image-picker
+```
 
-The mod gives Claude a `pick_image` tool that takes 2 to 9 image paths. Claude calls it whenever a generation gives several options. You can also ask for it directly, for example "show me these four and let me pick". The grid shows 2 across for up to 4 options and 3 across for more. Under it are a **None of these** button and a hint that you can also type the number.
+## Get updates automatically
 
-Each image is shrunk to a thumbnail first, and your originals are left as they are. The mod uses the first resizer it finds: ImageMagick (`magick`), libvips (`vipsthumbnail`), `sips` (built into every Mac) or `ffmpeg`.
+Claude Code doesn't update this mod on its own unless you turn that on. You only need to do this once:
 
-If Claude tries to open two or more images at once in a viewer (`open`, `xdg-open`, `imv` and the like), the mod blocks it and points Claude to the picker. Opening a single image still works.
+1. Type `/plugin` at the Claude Code prompt and press Enter.
+2. Go to **Marketplaces** and choose `mod-image-picker`.
+3. Choose **Enable auto-update**.
 
-## Where it shows images
+New versions then arrive when you start a new session. To update right away instead, open `/plugin`, go to **Installed**, choose image-picker, and choose **Update now**.
 
-| Where | What you see |
+## What it does
+
+Whenever Claude makes 2 to 9 images, it shows them to you as a grid. You can also ask for the grid yourself, for example "show me these four and let me pick."
+
+- Up to 4 images show 2 across. 5 or more show 3 across.
+- Under the grid there's a **None of these** button. You can also type the number of the one you want.
+- The grid uses small copies of your images. Your original files stay as they are.
+
+The mod also stops Claude from opening a pile of images in separate windows at once, and shows them in the grid instead. Opening a single image still works.
+
+To make the small copies, the mod uses an image tool your computer already has. Every Mac has one built in (`sips`), so most people don't need to install anything. On other computers it looks for ImageMagick, libvips or ffmpeg.
+
+## Where you'll see real images
+
+What you see depends on the app you run Claude in.
+
+| App | What you see |
 | --- | --- |
-| Ghostty or kitty, on Linux or macOS | Real images |
-| Inside tmux 3.3 or later | Real images, once `allow-passthrough` and `focus-events` are both on (see below) |
-| iTerm2 3.5 or later | Real images in Claude Code's fullscreen mode |
-| Claude desktop app, VS Code | Thumbnails drawn in the app's own panel |
-| Other terminals | Numbered file names, with the same Pick buttons |
+| Ghostty or kitty | The images themselves |
+| iTerm2 (version 3.5 or later) | The images themselves, in Claude Code's fullscreen mode |
+| Claude desktop app, VS Code | Small images in the app's side panel |
+| tmux (version 3.3 or later) | The images themselves, after the setup below |
+| Any other terminal | A numbered list of file names, with the same Pick buttons |
 
-For tmux, add these lines to `~/.tmux.conf`:
+### tmux setup
+
+If you don't know what tmux is, you can skip this. If you use it, add these two lines to the file `~/.tmux.conf`:
 
 ```
 set -g allow-passthrough on
