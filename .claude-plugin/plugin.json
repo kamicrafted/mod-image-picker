@@ -1,6 +1,6 @@
 {
   "name": "image-picker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Show generated image options inline (terminal or Claude Desktop) and pick one with a click or a number",
   "types": "./types/index.d.ts",
   "license": "MIT",
